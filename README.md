@@ -1,67 +1,70 @@
 # 🌐 Open Proxy Census
 
-Open Proxy Censusは、世界中に意図せず公開されている「オープンプロキシ」の実態を調査・可視化し、インターネットのセキュリティ向上を目指す研究プロジェクトです。
+Open Proxy Censusは、世界中に意図せず公開されている「オープンプロキシ」の実態を調査・可視化し、インターネットのセキュリティ向上を目指す高度な研究プロジェクトです。
 
-単なる生存確認に留まらず、プロキシの寿命、使用ソフトウェアの種類、悪用率（ブラックリスト登録状況）などを多角的に分析します。
+単なる生存確認に留まらず、プロキシの寿命、ASN/組織（ISP）情報の特定、使用ソフトウェアの種類、悪用率（ブラックリスト登録状況）などを多角的に分析し、時系列データとして蓄積します。
 
 ## 📊 リアルタイム・ダッシュボード
 起動後、`http://localhost:8080` で以下の統計をリアルタイムに確認できます：
 
 ![Open Proxy Census Dashboard](img/Screenshot.png)
 
-- **世界地図分布**: どの国にプロキシが集中しているか。
-- **応答速度分布**: ユーザー体験に直結するパフォーマンス統計。
-- **匿名度レベル**: 利用者のプライバシーが守られているか。
-- **ソフトウェア分布**: サーバーで使用されているソフト（Squid, MikroTik, Apache等）の特定。
-- **悪用判定 (Abuse Rate)**: DNSBL（Spamhaus等）に登録されている「汚れた」IPの割合。
+- **世界地図分布**: 国別のプロキシ集中度。
+- **組織分析 (ASN/Org)**: Google, AWS, 各国ISPなど、どのインフラで公開されているか。
+- **存続寿命 (Lifespan)**: プロキシがどれだけの期間、公開され続けているかの分布。
+- **ソフトウェア・フィンガープリント**: Squid, nginx, MikroTik, ZTE等の特定。
+- **悪用リスク判定**: DNSBL（Spamhaus等）によるブラックリスト登録状況。
 
-## ⚙️ システム・アーキテクチャ
-高並列パイプライン構造を採用し、数千〜数万件のプロキシを高速に処理します。
+## 🔍 セキュリティ研究の事例
+スキャン過程では、意図しない設定ミスにより管理画面が露出しているケースが多数発見されています。
 
+**事例：ルーター管理画面の漏洩（匿名化済み）**
 ```text
-[ Collector ] ──> [ Port Scanner ] ──> [ Proxy Tester ] ──> [ Analyzer ] ──> [ Storage ]
-      │                (5,000 workers)       (2,000 workers)      (200 workers)        │
-      └─ 公開リスト取得      └─ 接続確認            └─ プロキシ機能検証    └─ ソフトウェア判定     └─ SQLite (WAL)
-         CIDR展開                                                         ブラックリスト照合
-                                                                          WHOIS/Abuse抽出
+HTTP/1.1 200 OK
+Server: ZTE web server 1.0 ZTE corp 2015.
+Content-Type: text/html; charset=utf-8
+...
+<title>ZXHN H199A - Login</title>
 ```
+このような「意図しない公開」を発見し、ASN情報から管理者へフィードバックを行うことが、本プロジェクトの最終的な目標の一つです。
 
-### パイプラインの詳細
-1.  **Collector**: 複数の公開リストや指定されたCIDR範囲からターゲットIPを収集。
-2.  **Port Scanner**: ターゲットに対して指定ポートの開放を確認（※現在はリストベースのためバイパス可）。
-3.  **Proxy Tester**: 実際にHTTPリクエストをプロキシ経由で送信し、生存・速度・国判定を実行。
-4.  **Analyzer**: 生存プロキシに対し、`Server`ヘッダーの解析やDNSBL照合を行い、詳細な属性を付与。
-5.  **Storage**: 全ての履歴を保存し、平均寿命などの長期的な統計を算出。
+## ⚖️ 日本の法律と安全性への配慮
+本システムは、日本の法律（不正アクセス禁止法、威力業務妨害等）を遵守し、安全に研究を行うために以下の配慮を行っています。
 
-## 🚀 クイックスタート
+- **非侵入型スキャン**: パスワード試行や脆弱性攻撃は一切行いません。公開ポートへの接続確認のみを実行します。
+- **負荷制御**: `config.yaml` により並列ワーカー数を調整可能。同一ターゲットへの過度な負荷を防ぎます。
+- **閲覧専用モードの推奨**: ネットワーク通信を行わずに蓄積データを分析できるモードを搭載しています。
 
-### 1. 依存関係の解決
-```bash
-go mod tidy
-```
+## 🚀 実行モード
 
-### 2. 設定のカスタマイズ
-`config.yaml` を編集して、スキャン対象や並列数を調整できます。
-```yaml
-workers:
-  proxy_tester: 2000
-  analyzer: 200
-
-targets:
-  sources:
-    - "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
-```
-
-### 3. 実行
+### 1. フルスキャン・モード
+収集、検証、分析、保存を全て同時に行います。
 ```bash
 go run cmd/proxy-census/main.go
 ```
 
-## 🛠 技術スタック
-- **Language**: Go (Goroutines/Channelsによる並列処理)
-- **Database**: SQLite (Write-Ahead Loggingモードで高頻度書き込みに対応)
-- **Frontend**: Bootstrap 5, Chart.js, jsVectorMap
-- **Libraries**: `modernc.org/sqlite`, `github.com/likexian/whois`, `gopkg.in/yaml.v3`
+### 2. 閲覧専用モード (推奨)
+蓄積されたデータ（`data/census.db`）を使い、ダッシュボードのみを起動します。
+ネットワークにパケットを送信しないため、最も安全に分析が可能です。
+```bash
+go run cmd/proxy-census/main.go --server-only
+```
 
-## ⚖️ 免責事項
-本プロジェクトは教育および情報提供を目的としています。過度な頻度でのスキャンや、各国の法律に抵触する恐れのある範囲へのアクセスは行わないでください。収集したデータは善意の注意喚起（通知プロジェクト）などのセキュリティ向上目的でのみ使用することを推奨します。
+## ⚙️ システム・アーキテクチャ
+Goルーチンによる多段パイプライン構造を採用。
+
+```text
+[ Collector ] ──> [ Proxy Tester ] ──> [ Analyzer ] ──> [ Storage ]
+      │                (2,000 workers)      (200 workers)        │
+      └─ 公開リスト取得      └─ 生存/国判定        └─ ソフト特定         └─ SQLite (WAL)
+         ASN/Org特定         応答速度計測          ブラックリスト照合     履歴(History)記録
+```
+
+## 🛠 技術スタック
+- **Language**: Go
+- **Database**: SQLite (WALモード / 履歴管理対応)
+- **Visualizer**: Chart.js, jsVectorMap, Bootstrap 5
+- **Intelligence**: ip-api.com, DNSBL, WHOIS
+
+## 📝 免責事項
+本プロジェクトは教育および情報提供を目的としています。使用に伴ういかなる損害についても責任を負いません。法的な境界線を理解した上で、善意のセキュリティ向上に役立ててください。

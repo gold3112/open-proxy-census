@@ -16,6 +16,11 @@ import (
 	"open-proxy-census/pkg/notifier"
 )
 
+type Target struct {
+	Addr   string
+	Source string
+}
+
 type Pipeline struct {
 	cfg   *config.Config
 	store *store.Store
@@ -28,9 +33,7 @@ func New(cfg *config.Config, s *store.Store) *Pipeline {
 func (p *Pipeline) Run(ctx context.Context) {
 	log.Println("Starting Pipeline...")
 
-	// Channels
-	targets := make(chan string, 10000)
-	livePorts := make(chan string, 10000) // ip:port
+	targets := make(chan Target, 10000)
 	tested := make(chan *store.Proxy, 5000)
 	analyzed := make(chan *store.Proxy, 5000)
 
@@ -44,36 +47,22 @@ func (p *Pipeline) Run(ctx context.Context) {
 		p.runCollector(targets)
 	}()
 
-	// 2. Port Scanner (Skip for now as most sources are lists with ports)
-	// In a real census with CIDRs, we would have port scanners here.
-	// For now, we just pass targets directly if they have ports, 
-	// or expand them if we implement CIDR + Port logic.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer close(livePorts)
-		// Bypass port scanner for list sources, but could be added here
-		for target := range targets {
-			livePorts <- target
-		}
-	}()
-
-	// 3. Proxy Tester
+	// 2. Proxy Tester
 	for i := 0; i < p.cfg.Workers.ProxyTester; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.runTester(livePorts, tested)
+			p.runTester(targets, tested)
 		}()
 	}
 
-	// Closer for tested channel
+	// Closer for tested
 	go func() {
 		wg.Wait()
 		close(tested)
 	}()
 
-	// 4. Analyzer
+	// 3. Analyzer
 	var analysisWg sync.WaitGroup
 	for i := 0; i < p.cfg.Workers.Analyzer; i++ {
 		analysisWg.Add(1)
@@ -83,18 +72,17 @@ func (p *Pipeline) Run(ctx context.Context) {
 		}()
 	}
 
-	// Closer for analyzed channel
+	// Closer for analyzed
 	go func() {
 		analysisWg.Wait()
 		close(analyzed)
 	}()
 
-	// 5. Storage (Sink)
+	// 4. Storage
 	p.runStorage(analyzed)
 }
 
-func (p *Pipeline) runCollector(out chan<- string) {
-	// 1. List Sources
+func (p *Pipeline) runCollector(out chan<- Target) {
 	for _, src := range p.cfg.Targets.Sources {
 		log.Printf("Collecting from %s", src)
 		c := &crawler.URLCrawler{URL: src}
@@ -104,41 +92,43 @@ func (p *Pipeline) runCollector(out chan<- string) {
 			continue
 		}
 		for _, item := range list {
-			out <- item
+			out <- Target{Addr: item, Source: src}
 		}
 	}
-	
-	// 2. CIDR / Random (Not implemented fully yet, placeholder)
-	// if len(p.cfg.Targets.CIDRs) > 0 { ... }
 }
 
-func (p *Pipeline) runTester(in <-chan string, out chan<- *store.Proxy) {
-	for addr := range in {
-		// Basic check
-		res := checker.Check(addr)
+func (p *Pipeline) runTester(in <-chan Target, out chan<- *store.Proxy) {
+	for target := range in {
+		res := checker.Check(target.Addr)
 		
 		status := "dead"
+		var lastErr string
 		if res.Alive {
 			status = "active"
 		}
-
-		// Parse IP:Port
-		parts := strings.Split(addr, ":")
-		if len(parts) != 2 {
-			continue
+		if res.Error != nil {
+			lastErr = res.Error.Error()
 		}
+
+		parts := strings.Split(target.Addr, ":")
+		if len(parts) != 2 { continue }
 		port := 0
 		fmt.Sscanf(parts[1], "%d", &port)
 
 		proxy := &store.Proxy{
 			IP:           parts[0],
 			Port:         port,
-			Protocol:     "http",
+			Protocol:     "http", // Placeholder for multi-proto detection
+			Source:       target.Source,
 			Country:      res.Country,
+			ASN:          res.ASN,
+			Organization: res.Org,
 			Anonymity:    res.Anonymity,
 			ResponseTime: res.ResponseTime.Milliseconds(),
 			LastChecked:  time.Now(),
+			LastError:    lastErr,
 			Status:       status,
+			NextCheck:    time.Now().Add(24 * time.Hour), // Schedule next check
 		}
 		out <- proxy
 	}
@@ -147,34 +137,27 @@ func (p *Pipeline) runTester(in <-chan string, out chan<- *store.Proxy) {
 func (p *Pipeline) runAnalyzer(in <-chan *store.Proxy, out chan<- *store.Proxy) {
 	for proxy := range in {
 		if proxy.Status == "active" {
-			// Deep Analysis
 			result := analysis.Analyze(proxy.IP, proxy.Port)
 			proxy.Software = result.Software
 			proxy.Blacklisted = result.Blacklisted
 			
-			// Abuse Email
 			email, err := notifier.GetAbuseEmail(proxy.IP)
-			if err == nil {
-				proxy.AbuseEmail = email
-			}
+			if err == nil { proxy.AbuseEmail = email }
 			
-			log.Printf("[ANALYZED] %s:%d (Soft: %s, BL: %v, Email: %s)", proxy.IP, proxy.Port, proxy.Software, proxy.Blacklisted, proxy.AbuseEmail)
+			log.Printf("[ANALYZED] %s:%d (%s) - %s", proxy.IP, proxy.Port, proxy.Organization, proxy.Software)
 		}
 		out <- proxy
 	}
 }
 
 func (p *Pipeline) runStorage(in <-chan *store.Proxy) {
-	count := 0
-	activeCount := 0
+	count, active := 0, 0
 	for proxy := range in {
 		count++
-		if proxy.Status == "active" {
-			activeCount++
-		}
+		if proxy.Status == "active" { active++ }
 		if err := p.store.SaveProxy(proxy); err != nil {
 			log.Printf("DB Error: %v", err)
 		}
 	}
-	log.Printf("Pipeline finished. Processed: %d, Active: %d", count, activeCount)
+	log.Printf("Pipeline finished. Processed: %d, Active: %d", count, active)
 }
