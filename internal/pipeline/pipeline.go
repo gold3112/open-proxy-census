@@ -39,9 +39,24 @@ func New(cfg *config.Config, s *store.Store) *Pipeline {
 	}
 }
 
-func (p *Pipeline) Run(ctx context.Context) {
-	log.Println("Starting Safe Pipeline...")
+func (p *Pipeline) RunLoop(ctx context.Context) {
+	log.Println("Starting Perpetual Census Loop...")
 
+	for {
+		log.Printf("--- Starting new scan cycle at %s ---", time.Now().Format("15:04:05"))
+		p.runCycle(ctx)
+		log.Printf("--- Cycle completed. Waiting 30 minutes for the next one ---")
+		
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Minute):
+			continue
+		}
+	}
+}
+
+func (p *Pipeline) runCycle(ctx context.Context) {
 	targetsChan := make(chan Target, 100000)
 	livePorts := make(chan Target, 50000)
 	tested := make(chan *store.Proxy, 10000)
@@ -51,12 +66,10 @@ func (p *Pipeline) Run(ctx context.Context) {
 	go func() {
 		defer close(targetsChan)
 		allTargets := p.collectAll()
-		
 		rand.Seed(time.Now().UnixNano())
 		rand.Shuffle(len(allTargets), func(i, j int) {
 			allTargets[i], allTargets[j] = allTargets[j], allTargets[i]
 		})
-
 		for _, t := range allTargets {
 			targetsChan <- t
 		}
@@ -65,16 +78,11 @@ func (p *Pipeline) Run(ctx context.Context) {
 	// 2. Port Scanner with Stats
 	var scannerWg sync.WaitGroup
 	scanCounter := make(chan int, 100)
-	
-	// Stats writer
 	go func() {
 		count := 0
 		for n := range scanCounter {
 			count += n
-			if count >= 100 {
-				p.store.IncrementProbeCount(count)
-				count = 0
-			}
+			if count >= 100 { p.store.IncrementProbeCount(count); count = 0 }
 		}
 		if count > 0 { p.store.IncrementProbeCount(count) }
 	}()
@@ -85,7 +93,7 @@ func (p *Pipeline) Run(ctx context.Context) {
 			defer scannerWg.Done()
 			for target := range targetsChan {
 				_ = p.limiter.Wait(ctx)
-				scanCounter <- 1 // Increment stat
+				scanCounter <- 1
 				p.runPortScanner(target, livePorts)
 			}
 		}()
@@ -106,11 +114,7 @@ func (p *Pipeline) Run(ctx context.Context) {
 			p.runTester(livePorts, tested)
 		}()
 	}
-
-	go func() {
-		testerWg.Wait()
-		close(tested)
-	}()
+	go func() { testerWg.Wait(); close(tested) }()
 
 	// 4. Analyzer
 	var analysisWg sync.WaitGroup
@@ -121,13 +125,9 @@ func (p *Pipeline) Run(ctx context.Context) {
 			p.runAnalyzer(tested, analyzed)
 		}()
 	}
+	go func() { analysisWg.Wait(); close(analyzed) }()
 
-	go func() {
-		analysisWg.Wait()
-		close(analyzed)
-	}()
-
-	// 5. Storage
+	// 5. Storage (This blocks until the cycle is truly finished)
 	p.runStorage(analyzed)
 }
 
