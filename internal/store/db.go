@@ -16,8 +16,8 @@ type Proxy struct {
 	ID            int64
 	IP            string
 	Port          int
-	Protocol      string // HTTP, SOCKS4, SOCKS5
-	Source        string // URL or CIDR
+	Protocol      string
+	Source        string
 	Country       string
 	ASN           string
 	Organization  string
@@ -40,7 +40,6 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Performance optimization
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
 	_, _ = db.Exec("PRAGMA synchronous=NORMAL;")
 
@@ -58,7 +57,7 @@ func NewStore(dbPath string) (*Store, error) {
 
 func (s *Store) initSchema() error {
 	// Proxies table
-	query := `
+	_, err := s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS proxies (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		ip TEXT NOT NULL,
@@ -80,27 +79,44 @@ func (s *Store) initSchema() error {
 		last_error TEXT,
 		status TEXT,
 		UNIQUE(ip, port)
-	);
-	`
-	_, err := s.db.Exec(query)
+	);`)
 	if err != nil { return err }
 
-	// History table for trend analysis
-	historyQuery := `
+	// History table
+	_, err = s.db.Exec(`
 	CREATE TABLE IF NOT EXISTS proxy_history (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		proxy_id INTEGER,
 		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 		status TEXT,
 		response_time INTEGER
-	);
-	`
-	_, err = s.db.Exec(historyQuery)
-	return err
+	);`)
+	if err != nil { return err }
+
+	// Global Stats table
+	_, err = s.db.Exec(`
+	CREATE TABLE IF NOT EXISTS global_stats (
+		key TEXT PRIMARY KEY,
+		value INTEGER
+	);`)
+	if err != nil { return err }
+	
+	_, _ = s.db.Exec("INSERT OR IGNORE INTO global_stats (key, value) VALUES ('total_probes', 0)")
+	return nil
 }
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+func (s *Store) IncrementProbeCount(n int) {
+	_, _ = s.db.Exec("UPDATE global_stats SET value = value + ? WHERE key = 'total_probes'", n)
+}
+
+func (s *Store) GetProbeCount() int {
+	var count int
+	_ = s.db.QueryRow("SELECT value FROM global_stats WHERE key = 'total_probes'").Scan(&count)
+	return count
 }
 
 func (s *Store) SaveProxy(p *Proxy) error {
@@ -129,7 +145,6 @@ func (s *Store) SaveProxy(p *Proxy) error {
 		return fmt.Errorf("failed to save proxy: %w", err)
 	}
 
-	// Log history
 	proxyID, _ := res.LastInsertId()
 	if proxyID == 0 {
 		_ = s.db.QueryRow("SELECT id FROM proxies WHERE ip = ? AND port = ?", p.IP, p.Port).Scan(&proxyID)
@@ -139,16 +154,25 @@ func (s *Store) SaveProxy(p *Proxy) error {
 	return nil
 }
 
-func (s *Store) GetStats() (map[string]int, error) {
-	stats := map[string]int{"total": 0, "active": 0, "avg_lifespan_hours": 0}
+func (s *Store) GetStats() (map[string]interface{}, error) {
+	stats := map[string]interface{}{
+		"total":              0,
+		"active":             0,
+		"avg_lifespan_hours": 0,
+		"total_probes":       s.GetProbeCount(),
+	}
+	
 	var total, active int
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM proxies").Scan(&total)
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM proxies WHERE status = 'active'").Scan(&active)
 	stats["total"] = total
 	stats["active"] = active
+
 	var avg sql.NullFloat64
 	_ = s.db.QueryRow("SELECT AVG(strftime('%s', last_seen_alive) - strftime('%s', first_seen)) / 3600 FROM proxies WHERE last_seen_alive IS NOT NULL").Scan(&avg)
-	if avg.Valid { stats["avg_lifespan_hours"] = int(avg.Float64) }
+	if avg.Valid {
+		stats["avg_lifespan_hours"] = int(avg.Float64)
+	}
 	return stats, nil
 }
 
