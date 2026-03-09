@@ -1,0 +1,17 @@
+workers:
+  port_scanner: 5000
+  proxy_tester: 2000
+  analyzer: 200
+
+targets:
+  # sources: ["https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"]
+  # cidrs: ["103.0.0.0/8"] # Example: Asia Pacific range (use with caution!)
+  sources: 
+    - "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
+    - "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+  
+  # Scan these ports if using CIDR or Random (not used for list sources which have ports)
+  ports: [80, 8080, 3128, 8000, 8888]
+
+database:
+  path: "data/census.db"
