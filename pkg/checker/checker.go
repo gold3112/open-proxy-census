@@ -41,7 +41,10 @@ func Check(proxyAddr string) Result {
 		Timeout: 10 * time.Second,
 	}
 
-	resp, err := client.Get("http://ip-api.com/json")
+	req, _ := http.NewRequest("GET", "http://ip-api.com/json", nil)
+	req.Header.Set("User-Agent", "OpenProxyCensus/1.0 (+https://github.com/your-repo/open-proxy-census; Research Project)")
+
+	resp, err := client.Do(req)
 	duration := time.Since(start)
 
 	if err != nil {

@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
+	"net"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
 	"open-proxy-census/internal/config"
 	"open-proxy-census/internal/store"
 	"open-proxy-census/pkg/analysis"
 	"open-proxy-census/pkg/checker"
+	"open-proxy-census/pkg/collector"
 	"open-proxy-census/pkg/crawler"
 	"open-proxy-census/pkg/notifier"
 )
@@ -22,47 +26,78 @@ type Target struct {
 }
 
 type Pipeline struct {
-	cfg   *config.Config
-	store *store.Store
+	cfg     *config.Config
+	store   *store.Store
+	limiter *rate.Limiter
 }
 
 func New(cfg *config.Config, s *store.Store) *Pipeline {
-	return &Pipeline{cfg: cfg, store: s}
+	// Default limit: 100 probes per second to be polite
+	return &Pipeline{
+		cfg:     cfg,
+		store:   s,
+		limiter: rate.NewLimiter(rate.Limit(100), 10),
+	}
 }
 
 func (p *Pipeline) Run(ctx context.Context) {
-	log.Println("Starting Pipeline...")
+	log.Println("Starting Safe Pipeline...")
 
-	targets := make(chan Target, 10000)
-	tested := make(chan *store.Proxy, 5000)
-	analyzed := make(chan *store.Proxy, 5000)
+	targetsChan := make(chan Target, 100000)
+	livePorts := make(chan Target, 50000)
+	tested := make(chan *store.Proxy, 10000)
+	analyzed := make(chan *store.Proxy, 10000)
 
-	var wg sync.WaitGroup
-
-	// 1. Collector
-	wg.Add(1)
+	// 1. Collector & Shuffler
 	go func() {
-		defer wg.Done()
-		defer close(targets)
-		p.runCollector(targets)
+		defer close(targetsChan)
+		allTargets := p.collectAll()
+		
+		// Randomize to avoid sequential scanning of subnets
+		rand.Seed(time.Now().UnixNano())
+		rand.Shuffle(len(allTargets), func(i, j int) {
+			allTargets[i], allTargets[j] = allTargets[j], allTargets[i]
+		})
+
+		for _, t := range allTargets {
+			targetsChan <- t
+		}
 	}()
 
-	// 2. Proxy Tester
-	for i := 0; i < p.cfg.Workers.ProxyTester; i++ {
-		wg.Add(1)
+	// 2. Port Scanner (TCP Check) with Rate Limiting
+	var scannerWg sync.WaitGroup
+	for i := 0; i < p.cfg.Workers.PortScanner; i++ {
+		scannerWg.Add(1)
 		go func() {
-			defer wg.Done()
-			p.runTester(targets, tested)
+			defer scannerWg.Done()
+			for target := range targetsChan {
+				_ = p.limiter.Wait(ctx) // Control global PPS
+				p.runPortScanner(target, livePorts)
+			}
 		}()
 	}
 
-	// Closer for tested
 	go func() {
-		wg.Wait()
+		scannerWg.Wait()
+		close(livePorts)
+	}()
+
+	// 3. Proxy Tester (HTTP Check)
+	var testerWg sync.WaitGroup
+	for i := 0; i < p.cfg.Workers.ProxyTester; i++ {
+		testerWg.Add(1)
+		go func() {
+			defer testerWg.Done()
+			p.runTester(livePorts, tested)
+		}()
+	}
+
+	go func() {
+		testerWg.Wait()
 		close(tested)
 	}()
 
-	// 3. Analyzer
+	// 4. Analyzer
 	var analysisWg sync.WaitGroup
 	for i := 0; i < p.cfg.Workers.Analyzer; i++ {
 		analysisWg.Add(1)
@@ -72,65 +107,97 @@ func (p *Pipeline) Run(ctx context.Context) {
 		}()
 	}
 
-	// Closer for analyzed
 	go func() {
 		analysisWg.Wait()
 		close(analyzed)
 	}()
 
-	// 4. Storage
+	// 5. Storage
 	p.runStorage(analyzed)
 }
 
-func (p *Pipeline) runCollector(out chan<- Target) {
+func (p *Pipeline) collectAll() []Target {
+	var all []Target
+
+	// 1. Database Re-scan (Maintain lifespan data)
+	dbProxies, err := p.store.GetProxiesToRecheck(10000)
+	if err == nil {
+		log.Printf("Adding %d proxies from DB for re-validation", len(dbProxies))
+		for _, p := range dbProxies {
+			all = append(all, Target{Addr: fmt.Sprintf("%s:%d", p.IP, p.Port), Source: p.Source})
+		}
+	}
+
+	// 2. List Sources
 	for _, src := range p.cfg.Targets.Sources {
 		log.Printf("Collecting from %s", src)
 		c := &crawler.URLCrawler{URL: src}
 		list, err := c.Fetch()
-		if err != nil {
-			log.Printf("Failed to fetch %s: %v", src, err)
-			continue
+		if err == nil {
+			for _, item := range list {
+				if !isPrivateIP(item) {
+					all = append(all, Target{Addr: item, Source: src})
+				}
+			}
 		}
-		for _, item := range list {
-			out <- Target{Addr: item, Source: src}
+	}
+
+	// CIDR Spot Probes
+	for _, cidr := range p.cfg.Targets.CIDRs {
+		ips, err := collector.ExpandCIDR(cidr)
+		if err == nil {
+			for _, ip := range ips {
+				for _, port := range p.cfg.Targets.Ports {
+					addr := fmt.Sprintf("%s:%d", ip, port)
+					if !isPrivateIP(addr) {
+						all = append(all, Target{Addr: addr, Source: "spot:" + cidr})
+					}
+				}
+			}
 		}
+	}
+	return all
+}
+
+func isPrivateIP(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return true
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+}
+
+func (p *Pipeline) runPortScanner(target Target, out chan<- Target) {
+	conn, err := net.DialTimeout("tcp", target.Addr, 2*time.Second)
+	if err == nil {
+		conn.Close()
+		out <- target
 	}
 }
 
 func (p *Pipeline) runTester(in <-chan Target, out chan<- *store.Proxy) {
 	for target := range in {
 		res := checker.Check(target.Addr)
-		
-		status := "dead"
-		var lastErr string
-		if res.Alive {
-			status = "active"
-		}
-		if res.Error != nil {
-			lastErr = res.Error.Error()
-		}
+		status, lastErr := "dead", ""
+		if res.Alive { status = "active" }
+		if res.Error != nil { lastErr = res.Error.Error() }
 
 		parts := strings.Split(target.Addr, ":")
 		if len(parts) != 2 { continue }
 		port := 0
 		fmt.Sscanf(parts[1], "%d", &port)
 
-		proxy := &store.Proxy{
-			IP:           parts[0],
-			Port:         port,
-			Protocol:     "http", // Placeholder for multi-proto detection
-			Source:       target.Source,
-			Country:      res.Country,
-			ASN:          res.ASN,
-			Organization: res.Org,
-			Anonymity:    res.Anonymity,
-			ResponseTime: res.ResponseTime.Milliseconds(),
-			LastChecked:  time.Now(),
-			LastError:    lastErr,
-			Status:       status,
-			NextCheck:    time.Now().Add(24 * time.Hour), // Schedule next check
+		out <- &store.Proxy{
+			IP: parts[0], Port: port, Protocol: "http", Source: target.Source,
+			Country: res.Country, ASN: res.ASN, Organization: res.Org,
+			Anonymity: res.Anonymity, ResponseTime: res.ResponseTime.Milliseconds(),
+			LastChecked: time.Now(), LastError: lastErr, Status: status,
+			NextCheck: time.Now().Add(24 * time.Hour),
 		}
-		out <- proxy
 	}
 }
 
@@ -138,12 +205,9 @@ func (p *Pipeline) runAnalyzer(in <-chan *store.Proxy, out chan<- *store.Proxy) 
 	for proxy := range in {
 		if proxy.Status == "active" {
 			result := analysis.Analyze(proxy.IP, proxy.Port)
-			proxy.Software = result.Software
-			proxy.Blacklisted = result.Blacklisted
-			
+			proxy.Software, proxy.Blacklisted = result.Software, result.Blacklisted
 			email, err := notifier.GetAbuseEmail(proxy.IP)
 			if err == nil { proxy.AbuseEmail = email }
-			
 			log.Printf("[ANALYZED] %s:%d (%s) - %s", proxy.IP, proxy.Port, proxy.Organization, proxy.Software)
 		}
 		out <- proxy
@@ -155,9 +219,7 @@ func (p *Pipeline) runStorage(in <-chan *store.Proxy) {
 	for proxy := range in {
 		count++
 		if proxy.Status == "active" { active++ }
-		if err := p.store.SaveProxy(proxy); err != nil {
-			log.Printf("DB Error: %v", err)
-		}
+		_ = p.store.SaveProxy(proxy)
 	}
 	log.Printf("Pipeline finished. Processed: %d, Active: %d", count, active)
 }

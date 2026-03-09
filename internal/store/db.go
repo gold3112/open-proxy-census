@@ -40,13 +40,19 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Performance optimization
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
 	_, _ = db.Exec("PRAGMA synchronous=NORMAL;")
+
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
 
 	s := &Store{db: db}
 	if err := s.initSchema(); err != nil {
 		return nil, err
 	}
+
 	return s, nil
 }
 
@@ -187,14 +193,14 @@ func (s *Store) GetResponseTimeStats() (map[string]int, error) {
 }
 
 func (s *Store) GetSoftwareStats() (map[string]int, error) {
-	rows, err := s.db.Query("SELECT software, COUNT(*) FROM proxies WHERE status = 'active' GROUP BY software ORDER BY COUNT(*) DESC LIMIT 10")
+	rows, err := s.db.Query("SELECT IFNULL(NULLIF(software, ''), 'Unknown'), COUNT(*) FROM proxies WHERE status = 'active' GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 10")
 	if err != nil { return nil, err }
 	defer rows.Close()
 	stats := make(map[string]int)
 	for rows.Next() {
 		var sw string
 		var count int
-		if err := rows.Scan(&sw, &count); err == nil && sw != "" { stats[sw] = count }
+		if err := rows.Scan(&sw, &count); err == nil { stats[sw] = count }
 	}
 	return stats, nil
 }
@@ -229,6 +235,21 @@ func (s *Store) GetLifespanStats() (map[string]int, error) {
 	return stats, nil
 }
 
+func (s *Store) GetProxiesToRecheck(limit int) ([]Proxy, error) {
+	query := `SELECT ip, port, protocol, source FROM proxies WHERE last_checked < datetime('now', '-12 hours') ORDER BY last_checked ASC LIMIT ?`
+	rows, err := s.db.Query(query, limit)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var list []Proxy
+	for rows.Next() {
+		var p Proxy
+		if err := rows.Scan(&p.IP, &p.Port, &p.Protocol, &p.Source); err == nil {
+			list = append(list, p)
+		}
+	}
+	return list, nil
+}
+
 func (s *Store) GetActiveProxies() ([]Proxy, error) {
 	rows, err := s.db.Query("SELECT ip, port, country, response_time, anonymity, org FROM proxies WHERE status = 'active' ORDER BY last_checked DESC LIMIT 10")
 	if err != nil { return nil, err }
@@ -236,7 +257,9 @@ func (s *Store) GetActiveProxies() ([]Proxy, error) {
 	var proxies []Proxy
 	for rows.Next() {
 		var p Proxy
-		if err := rows.Scan(&p.IP, &p.Port, &p.Country, &p.ResponseTime, &p.Anonymity, &p.Organization); err == nil { proxies = append(proxies, p) }
+		if err := rows.Scan(&p.IP, &p.Port, &p.Country, &p.ResponseTime, &p.Anonymity, &p.Organization); err == nil {
+			proxies = append(proxies, p)
+		}
 	}
 	return proxies, nil
 }
