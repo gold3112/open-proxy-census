@@ -32,7 +32,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	countryStats, _ := s.store.GetCountryStats()
 
 	data := struct {
-		Stats        map[string]int
+		Stats        map[string]interface{}
 		CountryStats map[string]int
 	}{
 		Stats:        stats,
