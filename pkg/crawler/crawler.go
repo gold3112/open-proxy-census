@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Crawler defines the interface for fetching proxy lists
@@ -27,7 +28,10 @@ type URLCrawler struct {
 }
 
 func (c *URLCrawler) Fetch() ([]string, error) {
-	resp, err := http.Get(c.URL)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Get(c.URL)
 	if err != nil {
 		return nil, err
 	}

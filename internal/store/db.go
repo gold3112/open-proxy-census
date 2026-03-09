@@ -39,75 +39,27 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-
 	_, _ = db.Exec("PRAGMA journal_mode=WAL;")
 	_, _ = db.Exec("PRAGMA synchronous=NORMAL;")
-
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-
 	s := &Store{db: db}
 	if err := s.initSchema(); err != nil {
 		return nil, err
 	}
-
 	return s, nil
 }
 
 func (s *Store) initSchema() error {
-	// Proxies table
-	_, err := s.db.Exec(`
-	CREATE TABLE IF NOT EXISTS proxies (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		ip TEXT NOT NULL,
-		port INTEGER NOT NULL,
-		protocol TEXT,
-		source TEXT,
-		country TEXT,
-		asn TEXT,
-		org TEXT,
-		anonymity TEXT,
-		abuse_email TEXT,
-		software TEXT,
-		blacklisted BOOLEAN,
-		response_time INTEGER,
-		last_checked DATETIME,
-		first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-		last_seen_alive DATETIME,
-		next_check DATETIME,
-		last_error TEXT,
-		status TEXT,
-		UNIQUE(ip, port)
-	);`)
-	if err != nil { return err }
-
-	// History table
-	_, err = s.db.Exec(`
-	CREATE TABLE IF NOT EXISTS proxy_history (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		proxy_id INTEGER,
-		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-		status TEXT,
-		response_time INTEGER
-	);`)
-	if err != nil { return err }
-
-	// Global Stats table
-	_, err = s.db.Exec(`
-	CREATE TABLE IF NOT EXISTS global_stats (
-		key TEXT PRIMARY KEY,
-		value INTEGER
-	);`)
-	if err != nil { return err }
-	
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS proxies (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL, port INTEGER NOT NULL, protocol TEXT, source TEXT, country TEXT, asn TEXT, org TEXT, anonymity TEXT, abuse_email TEXT, software TEXT, blacklisted BOOLEAN, response_time INTEGER, last_checked DATETIME, first_seen DATETIME DEFAULT CURRENT_TIMESTAMP, last_seen_alive DATETIME, next_check DATETIME, last_error TEXT, status TEXT, UNIQUE(ip, port));`)
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS proxy_history (id INTEGER PRIMARY KEY AUTOINCREMENT, proxy_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, status TEXT, response_time INTEGER);`)
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS global_stats (key TEXT PRIMARY KEY, value INTEGER);`)
 	_, _ = s.db.Exec("INSERT OR IGNORE INTO global_stats (key, value) VALUES ('total_probes', 0)")
 	return nil
 }
 
-func (s *Store) Close() error {
-	return s.db.Close()
-}
+func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) IncrementProbeCount(n int) {
 	_, _ = s.db.Exec("UPDATE global_stats SET value = value + ? WHERE key = 'total_probes'", n)
@@ -120,71 +72,40 @@ func (s *Store) GetProbeCount() int {
 }
 
 func (s *Store) SaveProxy(p *Proxy) error {
-	query := `
-	INSERT INTO proxies (ip, port, protocol, source, country, asn, org, anonymity, abuse_email, software, blacklisted, response_time, last_checked, last_seen_alive, next_check, last_error, status)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(ip, port) DO UPDATE SET
-		protocol = excluded.protocol,
-		source = CASE WHEN proxies.source IS NULL THEN excluded.source ELSE proxies.source END,
-		country = CASE WHEN excluded.country != 'unknown' THEN excluded.country ELSE proxies.country END,
-		asn = excluded.asn,
-		org = excluded.org,
-		anonymity = excluded.anonymity,
-		abuse_email = CASE WHEN excluded.abuse_email != '' THEN excluded.abuse_email ELSE proxies.abuse_email END,
-		software = CASE WHEN excluded.software != 'Unknown' THEN excluded.software ELSE proxies.software END,
-		blacklisted = excluded.blacklisted,
-		response_time = excluded.response_time,
-		last_checked = excluded.last_checked,
-		last_seen_alive = CASE WHEN excluded.status = 'active' THEN excluded.last_checked ELSE proxies.last_seen_alive END,
-		next_check = excluded.next_check,
-		last_error = excluded.last_error,
-		status = excluded.status
-	`
-	res, err := s.db.Exec(query, p.IP, p.Port, p.Protocol, p.Source, p.Country, p.ASN, p.Organization, p.Anonymity, p.AbuseEmail, p.Software, p.Blacklisted, p.ResponseTime, p.LastChecked, p.LastChecked, p.NextCheck, p.LastError, p.Status)
-	if err != nil {
-		return fmt.Errorf("failed to save proxy: %w", err)
-	}
-
+	const timeFmt = "2006-01-02 15:04:05"
+	lastChecked := p.LastChecked.Format(timeFmt)
+	nextCheck := p.NextCheck.Format(timeFmt)
+	query := `INSERT INTO proxies (ip, port, protocol, source, country, asn, org, anonymity, abuse_email, software, blacklisted, response_time, last_checked, last_seen_alive, next_check, last_error, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(ip, port) DO UPDATE SET protocol = excluded.protocol, source = CASE WHEN proxies.source IS NULL THEN excluded.source ELSE proxies.source END, country = CASE WHEN excluded.country != '??' AND excluded.country != '' THEN excluded.country ELSE proxies.country END, asn = excluded.asn, org = excluded.org, anonymity = excluded.anonymity, abuse_email = CASE WHEN excluded.abuse_email != '' THEN excluded.abuse_email ELSE proxies.abuse_email END, software = CASE WHEN excluded.software != 'Unknown' AND excluded.software != '' THEN excluded.software ELSE proxies.software END, blacklisted = excluded.blacklisted, response_time = excluded.response_time, last_checked = excluded.last_checked, last_seen_alive = CASE WHEN excluded.status = 'active' THEN excluded.last_checked ELSE proxies.last_seen_alive END, next_check = excluded.next_check, last_error = excluded.last_error, status = excluded.status`
+	res, err := s.db.Exec(query, p.IP, p.Port, p.Protocol, p.Source, p.Country, p.ASN, p.Organization, p.Anonymity, p.AbuseEmail, p.Software, p.Blacklisted, p.ResponseTime, lastChecked, lastChecked, nextCheck, p.LastError, p.Status)
+	if err != nil { return err }
 	proxyID, _ := res.LastInsertId()
-	if proxyID == 0 {
-		_ = s.db.QueryRow("SELECT id FROM proxies WHERE ip = ? AND port = ?", p.IP, p.Port).Scan(&proxyID)
-	}
+	if proxyID == 0 { _ = s.db.QueryRow("SELECT id FROM proxies WHERE ip = ? AND port = ?", p.IP, p.Port).Scan(&proxyID) }
 	_, _ = s.db.Exec("INSERT INTO proxy_history (proxy_id, status, response_time) VALUES (?, ?, ?)", proxyID, p.Status, p.ResponseTime)
-
 	return nil
 }
 
 func (s *Store) GetStats() (map[string]interface{}, error) {
-	stats := map[string]interface{}{
-		"total":              0,
-		"active":             0,
-		"avg_lifespan_hours": 0,
-		"total_probes":       s.GetProbeCount(),
-	}
-	
+	stats := map[string]interface{}{"total": 0, "active": 0, "avg_lifespan_hours": 0, "total_probes": s.GetProbeCount()}
 	var total, active int
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM proxies").Scan(&total)
 	_ = s.db.QueryRow("SELECT COUNT(*) FROM proxies WHERE status = 'active'").Scan(&active)
 	stats["total"] = total
 	stats["active"] = active
-
 	var avg sql.NullFloat64
 	_ = s.db.QueryRow("SELECT AVG(strftime('%s', last_seen_alive) - strftime('%s', first_seen)) / 3600 FROM proxies WHERE last_seen_alive IS NOT NULL").Scan(&avg)
-	if avg.Valid {
-		stats["avg_lifespan_hours"] = int(avg.Float64)
-	}
+	if avg.Valid { stats["avg_lifespan_hours"] = int(avg.Float64) }
 	return stats, nil
 }
 
 func (s *Store) GetCountryStats() (map[string]int, error) {
-	rows, err := s.db.Query("SELECT country, COUNT(*) FROM proxies WHERE status = 'active' AND country IS NOT NULL GROUP BY country")
+	rows, err := s.db.Query("SELECT IFNULL(NULLIF(country, ''), 'Unknown'), COUNT(*) FROM proxies WHERE status = 'active' GROUP BY 1")
 	if err != nil { return nil, err }
 	defer rows.Close()
 	stats := make(map[string]int)
 	for rows.Next() {
 		var c string
 		var count int
-		if err := rows.Scan(&c, &count); err == nil && c != "" && c != "unknown" { stats[c] = count }
+		if err := rows.Scan(&c, &count); err == nil { stats[c] = count }
 	}
 	return stats, nil
 }
@@ -217,7 +138,7 @@ func (s *Store) GetResponseTimeStats() (map[string]int, error) {
 }
 
 func (s *Store) GetSoftwareStats() (map[string]int, error) {
-	rows, err := s.db.Query("SELECT IFNULL(NULLIF(software, ''), 'Unknown'), COUNT(*) FROM proxies WHERE status = 'active' GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 10")
+	rows, err := s.db.Query("SELECT IFNULL(NULLIF(software, ''), 'Unknown'), COUNT(*) FROM proxies WHERE status = 'active' GROUP BY 1")
 	if err != nil { return nil, err }
 	defer rows.Close()
 	stats := make(map[string]int)
@@ -231,8 +152,8 @@ func (s *Store) GetSoftwareStats() (map[string]int, error) {
 
 func (s *Store) GetBlacklistStats() (map[string]int, error) {
 	stats := map[string]int{"clean": 0, "blacklisted": 0}
-	rows, err := s.db.Query("SELECT blacklisted, COUNT(*) FROM proxies WHERE status = 'active' GROUP BY blacklisted")
-	if err == nil {
+	rows, _ := s.db.Query("SELECT blacklisted, COUNT(*) FROM proxies WHERE status = 'active' GROUP BY blacklisted")
+	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
 			var bl bool
@@ -267,11 +188,32 @@ func (s *Store) GetProxiesToRecheck(limit int) ([]Proxy, error) {
 	var list []Proxy
 	for rows.Next() {
 		var p Proxy
-		if err := rows.Scan(&p.IP, &p.Port, &p.Protocol, &p.Source); err == nil {
-			list = append(list, p)
-		}
+		if err := rows.Scan(&p.IP, &p.Port, &p.Protocol, &p.Source); err == nil { list = append(list, p) }
 	}
 	return list, nil
+}
+
+func (s *Store) GetActiveProxiesForCleaning() ([]Proxy, error) {
+	rows, err := s.db.Query("SELECT ip, port, source FROM proxies WHERE response_time > 0")
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var list []Proxy
+	for rows.Next() {
+		var p Proxy
+		if err := rows.Scan(&p.IP, &p.Port, &p.Source); err == nil { list = append(list, p) }
+	}
+	return list, nil
+}
+
+func (s *Store) UpdateStatusOnly(ip string, port int, status string, lastErr string, responseTime int64) {
+	const timeFmt = "2006-01-02 15:04:05"
+	now := time.Now().Format(timeFmt)
+	query := `UPDATE proxies SET status = ?, last_error = ?, response_time = ?, last_checked = ? WHERE ip = ? AND port = ?`
+	_, _ = s.db.Exec(query, status, lastErr, responseTime, now, ip, port)
+	
+	if status == "active" {
+		_, _ = s.db.Exec(`UPDATE proxies SET last_seen_alive = ? WHERE ip = ? AND port = ?`, now, ip, port)
+	}
 }
 
 func (s *Store) GetActiveProxies() ([]Proxy, error) {
@@ -281,9 +223,7 @@ func (s *Store) GetActiveProxies() ([]Proxy, error) {
 	var proxies []Proxy
 	for rows.Next() {
 		var p Proxy
-		if err := rows.Scan(&p.IP, &p.Port, &p.Country, &p.ResponseTime, &p.Anonymity, &p.Organization); err == nil {
-			proxies = append(proxies, p)
-		}
+		if err := rows.Scan(&p.IP, &p.Port, &p.Country, &p.ResponseTime, &p.Anonymity, &p.Organization); err == nil { proxies = append(proxies, p) }
 	}
 	return proxies, nil
 }

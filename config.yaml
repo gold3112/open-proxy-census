@@ -4,23 +4,47 @@ workers:
   analyzer: 200
 
 targets:
-  # Expanded Census Sources
+  # Massive Global Proxy Census Sources
   sources: 
+    # TheSpeedX (High Frequency)
     - "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt"
+    # monosans (Comprehensive)
     - "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
-    - "https://raw.githubusercontent.com/clket/proxy-list/master/proxy.txt"
-    - "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt"
-    - "https://raw.githubusercontent.com/rooster127/proxy-list/main/proxies/http.txt"
-    - "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt"
-    - "https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list.txt"
+    # proxifly (Clean list)
+    - "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"
+    # Zaeem20
     - "https://raw.githubusercontent.com/Zaeem20/Free-Proxy-List/master/http.txt"
-  
-  # Targeted Spot Probes
+    # ShiftyTR
+    - "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt"
+    # rdavydov
+    - "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt"
+    # rooster127
+    - "https://raw.githubusercontent.com/rooster127/proxy-list/main/proxies/http.txt"
+    # mmpx12
+    - "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"
+    # sunny9577
+    - "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt"
+    # clket
+    - "https://raw.githubusercontent.com/clket/proxy-list/master/proxy.txt"
+    # mertguvencli
+    - "https://raw.githubusercontent.com/mertguvencli/http-proxy-list/main/proxy-list.txt"
+    # mufeedvh (Targeted)
+    - "https://raw.githubusercontent.com/mufeedvh/proxy-list/master/http.txt"
+    # proxy-list.download
+    - "https://www.proxy-list.download/api/v1/get?type=http"
+    - "https://www.proxy-list.download/api/v1/get?type=https"
+    # sprox.y
+    - "https://raw.githubusercontent.com/andrei-p/proxy-list/main/http.txt"
+    # General merge list
+    - "https://raw.githubusercontent.com/officialputuid/Proxy-List/master/http.txt"
+
+  # Targeted Spot Probes (Research Hotspots)
   cidrs: 
     - "103.86.109.0/24"
-    - "45.135.139.0/24" # Another range found in previous scan with active proxies
+    - "45.135.139.0/24"
+    - "116.80.0.0/16"  # Example JP range for research
   
-  ports: [80, 8080, 3128, 8000, 8081, 8888]
+  ports: [80, 8080, 3128, 8000, 8081, 8888, 1080]
 
 database:
   path: "data/census.db"

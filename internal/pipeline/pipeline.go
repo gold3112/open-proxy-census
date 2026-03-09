@@ -133,24 +133,38 @@ func (p *Pipeline) runCycle(ctx context.Context) {
 
 func (p *Pipeline) collectAll() []Target {
 	var all []Target
+	log.Println("[Collector] Starting data collection...")
+
+	// 1. Database Re-scan
 	dbProxies, err := p.store.GetProxiesToRecheck(10000)
 	if err == nil {
+		log.Printf("[Collector] DB: Adding %d proxies for re-validation", len(dbProxies))
 		for _, p := range dbProxies {
 			all = append(all, Target{Addr: fmt.Sprintf("%s:%d", p.IP, p.Port), Source: p.Source})
 		}
 	}
+
+	// 2. List Sources
 	for _, src := range p.cfg.Targets.Sources {
+		log.Printf("[Collector] Fetching: %s", src)
+		// We'll assume URLCrawler uses a reasonable timeout internally or fix it there
 		c := &crawler.URLCrawler{URL: src}
 		list, err := c.Fetch()
-		if err == nil {
-			for _, item := range list {
-				if !isPrivateIP(item) {
-					all = append(all, Target{Addr: item, Source: src})
-				}
+		if err != nil {
+			log.Printf("[Collector] Failed %s: %v", src, err)
+			continue
+		}
+		log.Printf("[Collector] Received %d items from %s", len(list), src)
+		for _, item := range list {
+			if !isPrivateIP(item) {
+				all = append(all, Target{Addr: item, Source: src})
 			}
 		}
 	}
+
+	// 3. CIDR Spot Probes
 	for _, cidr := range p.cfg.Targets.CIDRs {
+		log.Printf("[Collector] Expanding CIDR: %s", cidr)
 		ips, err := collector.ExpandCIDR(cidr)
 		if err == nil {
 			for _, ip := range ips {
@@ -163,6 +177,7 @@ func (p *Pipeline) collectAll() []Target {
 			}
 		}
 	}
+	log.Printf("[Collector] Finished. Total targets to scan: %d", len(all))
 	return all
 }
 
@@ -223,4 +238,45 @@ func (p *Pipeline) runStorage(in <-chan *store.Proxy) {
 		_ = p.store.SaveProxy(proxy)
 	}
 	log.Printf("Pipeline finished. Processed: %d, Active: %d", count, active)
+}
+
+func (p *Pipeline) CleanDatabase(ctx context.Context) {
+	log.Println("Initiating deep cleaning of database...")
+	
+	rows, err := p.store.GetActiveProxiesForCleaning()
+	if err != nil {
+		log.Fatalf("Failed to fetch proxies for cleaning: %v", err)
+	}
+	log.Printf("Re-verifying %d candidates...", len(rows))
+
+	targets := make(chan Target, len(rows))
+
+	// Load targets
+	for _, prx := range rows {
+		targets <- Target{Addr: fmt.Sprintf("%s:%d", prx.IP, prx.Port), Source: prx.Source}
+	}
+	close(targets)
+
+	// Run strict verification
+	var wg sync.WaitGroup
+	for i := 0; i < p.cfg.Workers.ProxyTester; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range targets {
+				res := checker.CheckStrict(t.Addr)
+				status, lastErr := "dead", ""
+				if res.Alive { status = "active" }
+				if res.Error != nil { lastErr = res.Error.Error() }
+
+				parts := strings.Split(t.Addr, ":")
+				port := 0
+				fmt.Sscanf(parts[1], "%d", &port)
+
+				p.store.UpdateStatusOnly(parts[0], port, status, lastErr, res.ResponseTime.Milliseconds())
+			}
+		}()
+	}
+	wg.Wait()
+	log.Println("Database cleaning completed.")
 }

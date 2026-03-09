@@ -4,164 +4,160 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Open Proxy Census - Live Dashboard</title>
+    
+    <!-- CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/jsvectormap/dist/css/jsvectormap.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/jsvectormap"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jsvectormap/dist/maps/world.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        .card { border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; border: none; }
-        .card-header { background: white; border-bottom: 1px solid #eee; font-weight: bold; }
-        #world-map { height: 350px; width: 100%; }
-        .stat-value { font-size: 2.2rem; font-weight: 800; }
-        .table-responsive { max-height: 300px; overflow-y: auto; }
+        body { background-color: #f8f9fa; font-family: system-ui, -apple-system, sans-serif; }
+        .card { border: none; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .card-header { background: #fff; font-weight: bold; border-bottom: 1px solid #eee; }
+        .stat-card { padding: 20px; text-align: center; }
+        .stat-value { font-size: 2rem; font-weight: 800; color: #333; }
+        .stat-label { font-size: 0.8rem; color: #666; text-transform: uppercase; }
+        #world-map { height: 400px; width: 100%; }
+        .chart-wrapper { position: relative; height: 220px; width: 100%; }
+        .table-scroll { max-height: 400px; overflow-y: auto; font-size: 0.85rem; }
     </style>
 </head>
-<body class="bg-light">
-    <nav class="navbar navbar-dark bg-dark mb-4">
-        <div class="container-fluid px-4">
-            <span class="navbar-brand mb-0 h1">🌐 Open Proxy Census <small class="text-secondary ms-2 h6">Live Observation</small></span>
-            <span class="text-light" id="last-update">Connecting...</span>
-        </div>
+<body>
+
+    <nav class="navbar navbar-dark bg-dark mb-4 px-4">
+        <span class="navbar-brand">🌐 Open Proxy Census <small class="text-muted ms-2">Research Console</small></span>
+        <div id="sync-status" class="text-white-50 small">Connecting to API...</div>
     </nav>
 
     <div class="container-fluid px-4">
-        <div class="row text-center mb-2">
-            <div class="col-md-3">
-                <div class="card bg-white p-3">
-                    <div class="text-uppercase text-secondary small mb-1">Total Probes Sent</div>
-                    <div class="stat-value text-secondary" id="stat-probes">0</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-white p-3">
-                    <div class="text-uppercase text-secondary small mb-1">Proxies in DB</div>
-                    <div class="stat-value text-primary" id="stat-total">0</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-white p-3">
-                    <div class="text-uppercase text-secondary small mb-1">Active Proxies</div>
-                    <div class="stat-value text-success" id="stat-active">0</div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-white p-3">
-                    <div class="text-uppercase text-secondary small mb-1">Avg Lifespan</div>
-                    <div class="stat-value text-info" id="stat-lifespan">0 <small class="h5">hrs</small></div>
-                </div>
-            </div>
+        <!-- Dashboard Top -->
+        <div class="row g-3 mb-4">
+            <div class="col-md-3"><div class="card stat-card border-bottom border-secondary border-4"><div class="stat-label">Probes</div><div class="stat-value" id="val-probes">0</div></div></div>
+            <div class="col-md-3"><div class="card stat-card border-bottom border-primary border-4"><div class="stat-label">Total DB</div><div class="stat-value" id="val-total">0</div></div></div>
+            <div class="col-md-3"><div class="card stat-card border-bottom border-success border-4"><div class="stat-label">Active</div><div class="stat-value" id="val-active">0</div></div></div>
+            <div class="col-md-3"><div class="card stat-card border-bottom border-info border-4"><div class="stat-label">Avg Lifespan</div><div class="stat-value" id="val-lifespan">0<small class="h6">h</small></div></div></div>
         </div>
 
         <div class="row">
-            <div class="col-md-8">
+            <!-- Map -->
+            <div class="col-lg-8">
                 <div class="card">
                     <div class="card-header">Geographic Distribution</div>
                     <div class="card-body"><div id="world-map"></div></div>
                 </div>
             </div>
-            <div class="col-md-4">
+            <!-- Log -->
+            <div class="col-lg-4">
                 <div class="card">
                     <div class="card-header">Recent Activity</div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-sm table-hover mb-0">
-                                <thead><tr><th>IP:Port</th><th>Geo</th><th>Spd</th></tr></thead>
-                                <tbody id="proxy-table-body"></tbody>
-                            </table>
-                        </div>
+                    <div class="card-body p-0 table-scroll">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light"><tr><th class="ps-3">Target</th><th>Geo</th><th>Latency</th></tr></thead>
+                            <tbody id="log-body"></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div class="row">
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">Anonymity & Blacklist</div>
-                    <div class="card-body">
-                        <canvas id="anonymityChart" class="mb-3"></canvas>
-                        <canvas id="blacklistChart"></canvas>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">Performance & Software</div>
-                    <div class="card-body">
-                        <canvas id="responseTimeChart" class="mb-3"></canvas>
-                        <canvas id="softwareChart"></canvas>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header">Lifespan Distribution</div>
-                    <div class="card-body"><canvas id="lifespanChart"></canvas></div>
-                </div>
-            </div>
+        <!-- Charts Grid -->
+        <div class="row g-3 mb-5">
+            <div class="col-md-4"><div class="card"><div class="card-header">Top Countries</div><div class="card-body chart-wrapper"><canvas id="chart-countries"></canvas></div></div></div>
+            <div class="col-md-4"><div class="card"><div class="card-header">Software</div><div class="card-body chart-wrapper"><canvas id="chart-software"></canvas></div></div></div>
+            <div class="col-md-4"><div class="card"><div class="card-header">Lifespan</div><div class="card-body chart-wrapper"><canvas id="chart-lifespan"></canvas></div></div></div>
+            <div class="col-md-4"><div class="card"><div class="card-header">Anonymity</div><div class="card-body chart-wrapper"><canvas id="chart-anonymity"></canvas></div></div></div>
+            <div class="col-md-4"><div class="card"><div class="card-header">Response Time</div><div class="card-body chart-wrapper"><canvas id="chart-response"></canvas></div></div></div>
+            <div class="col-md-4"><div class="card"><div class="card-header">Blacklist</div><div class="card-body chart-wrapper"><canvas id="chart-blacklist"></canvas></div></div></div>
         </div>
     </div>
 
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsvectormap"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsvectormap/dist/maps/world.js"></script>
+
     <script>
-        const map = new jsVectorMap({
-            selector: '#world-map', map: 'world',
-            series: { regions: [{ attribute: 'fill', scale: ['#E8F5E9', '#2E7D32'] }] }
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log("Dashboard Initializing...");
+
+            const map = new jsVectorMap({
+                selector: '#world-map',
+                map: 'world',
+                series: { regions: [{ attribute: 'fill', scale: ['#e0f2f1', '#2e7d32'] }] }
+            });
+
+            const createChart = (id, type, label, color) => {
+                const ctx = document.getElementById(id);
+                if (!ctx) { console.error("Canvas not found:", id); return null; }
+                return new Chart(ctx, {
+                    type: type,
+                    data: { labels: [], datasets: [{ label: label, data: [], backgroundColor: color, borderRadius: 4 }] },
+                    options: { responsive: true, maintainAspectRatio: false, indexAxis: id.includes('countries') || id.includes('software') ? 'y' : 'x',
+                        plugins: { legend: { display: type === 'doughnut' || type === 'pie', position: 'bottom' } }
+                    }
+                });
+            };
+
+            const charts = {
+                countries: createChart('chart-countries', 'bar', 'Active', '#FF9F40'),
+                software: createChart('chart-software', 'bar', 'Nodes', '#9966FF'),
+                lifespan: createChart('chart-lifespan', 'doughnut', 'Dist', ['#4BC0C0', '#36A2EB', '#FF9F40', '#FF6384']),
+                anonymity: createChart('chart-anonymity', 'doughnut', 'Level', ['#FF6384', '#36A2EB', '#FFCE56']),
+                response: createChart('chart-response', 'bar', 'Nodes', '#36A2EB'),
+                blacklist: createChart('chart-blacklist', 'pie', 'Status', ['#4BC0C0', '#FF9F40'])
+            };
+
+            async function refresh() {
+                try {
+                    const response = await fetch('/api/stats');
+                    const d = await response.json();
+                    console.log("Data Received:", d);
+
+                    // Update Counters
+                    document.getElementById('val-probes').innerText = d.stats.total_probes.toLocaleString();
+                    document.getElementById('val-total').innerText = d.stats.total.toLocaleString();
+                    document.getElementById('val-active').innerText = d.stats.active.toLocaleString();
+                    document.getElementById('val-lifespan').innerText = d.stats.avg_lifespan_hours;
+                    document.getElementById('sync-status').innerText = 'Last Sync: ' + new Date().toLocaleTimeString();
+
+                    // Update Map
+                    if (d.countries) map.series.regions[0].setValues(d.countries);
+
+                    // Update Activity Log
+                    const tbody = document.getElementById('log-body');
+                    tbody.innerHTML = (d.activeProxies || []).map(p => `
+                        <tr><td class="ps-3 fw-bold">${p.IP}:${p.Port}</td>
+                        <td><span class="badge bg-light text-dark border">${p.Country || '??'}</span></td>
+                        <td class="text-muted">${p.ResponseTime}ms</td></tr>
+                    `).join('');
+
+                    // Update Charts with simple logic
+                    const updateSimple = (chart, dataMap, sort = false) => {
+                        if (!chart || !dataMap) return;
+                        let entries = Object.entries(dataMap);
+                        if (sort) entries.sort((a,b) => b[1] - a[1]);
+                        const top = entries.slice(0, 10);
+                        chart.data.labels = top.map(e => e[0]);
+                        chart.data.datasets[0].data = top.map(e => e[1]);
+                        chart.update();
+                    };
+
+                    updateSimple(charts.countries, d.countries, true);
+                    updateSimple(charts.software, d.software, true);
+                    updateSimple(charts.lifespan, d.lifespan);
+                    updateSimple(charts.anonymity, d.anonymity);
+                    updateSimple(charts.response, d.responseTime);
+                    
+                    if (charts.blacklist && d.blacklist) {
+                        charts.blacklist.data.labels = ['Clean', 'Blacklisted'];
+                        charts.blacklist.data.datasets[0].data = [d.blacklist.clean || 0, d.blacklist.blacklisted || 0];
+                        charts.blacklist.update();
+                    }
+
+                } catch (e) { console.error("Refresh failed:", e); }
+            }
+
+            refresh();
+            setInterval(refresh, 3000);
         });
-
-        const chartConfig = (type, colors) => ({
-            type, data: { labels: [], datasets: [{ data: [], backgroundColor: colors }] },
-            options: { responsive: true, plugins: { legend: { display: type === 'doughnut' || type === 'pie' } } }
-        });
-
-        const rtChart = new Chart(document.getElementById('responseTimeChart'), chartConfig('bar', '#36A2EB'));
-        const anoChart = new Chart(document.getElementById('anonymityChart'), chartConfig('doughnut', ['#FF6384', '#36A2EB', '#FFCE56']));
-        const softOptions = chartConfig('bar', '#9966FF');
-        softOptions.options.indexAxis = 'y';
-        const softChart = new Chart(document.getElementById('softwareChart'), softOptions);
-        const blChart = new Chart(document.getElementById('blacklistChart'), chartConfig('pie', ['#4BC0C0', '#FF9F40']));
-        const lsChart = new Chart(document.getElementById('lifespanChart'), chartConfig('doughnut', ['#FF6384', '#36A2EB', '#4BC0C0', '#9966FF']));
-
-        async function updateStats() {
-            try {
-                const res = await fetch('/api/stats');
-                const d = await res.json();
-
-                document.getElementById('stat-probes').innerText = d.stats.total_probes.toLocaleString();
-                document.getElementById('stat-total').innerText = d.stats.total.toLocaleString();
-                document.getElementById('stat-active').innerText = d.stats.active.toLocaleString();
-                document.getElementById('stat-lifespan').innerText = d.stats.avg_lifespan_hours || 0;
-                document.getElementById('last-update').innerText = 'Last Sync: ' + new Date().toLocaleTimeString();
-
-                map.series.regions[0].setValues(d.countries);
-
-                const tbody = document.getElementById('proxy-table-body');
-                tbody.innerHTML = d.activeProxies ? d.activeProxies.map(p => `<tr><td>${p.IP}:${p.Port}</td><td>${p.Country}</td><td>${p.ResponseTime}ms</td></tr>`).join('') : '';
-
-                rtChart.data.labels = Object.keys(d.responseTime);
-                rtChart.data.datasets[0].data = Object.values(d.responseTime);
-                rtChart.update();
-
-                anoChart.data.labels = Object.keys(d.anonymity);
-                anoChart.data.datasets[0].data = Object.values(d.anonymity);
-                anoChart.update();
-
-                softChart.data.labels = Object.keys(d.software);
-                softChart.data.datasets[0].data = Object.values(d.software);
-                softChart.update();
-
-                blChart.data.labels = ['Clean', 'Blacklisted'];
-                blChart.data.datasets[0].data = [d.blacklist.clean, d.blacklist.blacklisted];
-                blChart.update();
-
-                lsChart.data.labels = Object.keys(d.lifespan);
-                lsChart.data.datasets[0].data = Object.values(d.lifespan);
-                lsChart.update();
-            } catch (e) { console.error(e); }
-        }
-
-        updateStats();
-        setInterval(updateStats, 3000);
     </script>
 </body>
 </html>

@@ -15,6 +15,11 @@ data/*.db-shm
 .DS_Store
 Thumbs.db
 
+# Research Logs (Sensitive Data)
+RESEARCH_LOG.md
+investigate_clean.go
+analyze_clean_cluster.go
+
 # Go coverage and temporary files
 *.out
 *.test
